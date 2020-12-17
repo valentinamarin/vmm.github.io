@@ -1,0 +1,271 @@
+---
+title: "CASA 0005 GIS and Science Seminar 5"
+output: html_document
+---
+
+## An Introduction to Origin-Destination datasets
+
+This seminar introduces the use of two packages for dealing with network datasets, **igraph** and **stplanr**.  **igraph** is a really well known package of functions to manipulate graphs and analyse networks, and **stplanr** is a package created by Robin Lovelace to visualise and manipulate OD datasets with and emphasis on spatial transport data.
+
+You can find more about the use of **stplanr** in <https://geocompr.robinlovelace.net/transport.html>
+
+Learning outcomes of this seminar:
+
+ + Understand the structure of OD datasets
+ + Extract data from <https://geoportal.statistics.gov.uk/>
+ + Visualise commuting networks
+ + Introduce basic analyses
+
+### 1 Getting started
+
+```{r message=FALSE, warning=FALSE}
+#install.packages(c("igraph","ggplot2","rgdal","rgeos","downloader","geosphere","tmap"))
+
+library(igraph) # to create and analyse graphs
+library(stplanr) # to 
+library(pct) # To 
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(tmap)
+```
+
+### 2 Load the data
+
+What do we need to construct the network?
+
+OD networks represent movement flows between locations. The flow is represented by an **edge** connecting origin and destination **nodes**. To construct the network we need data from both: edges and nodes. Flows dasets usually consist on starting and end point columns, and other columns with some non-geographical attributes i.e. flow count, methods, distance, time, gender.
+This will be used to construct the edges. For the nodes' table we need an ID column (matching start and end point in main data), and a column with their geographic coordinates. 
+
+
+ ![](C:\Users\valentina\Desktop\GIS_seminar\simple table.png) 
+
+We will look at commuting flows in Manchester. To download the data we will use **pct** package, which allows us to extract datasets from <https://geoportal.statistics.gov.uk/>.But, you can download your own csv. data an read it in R.
+
+```{r message=FALSE, warning=FALSE}
+#Flows data
+
+flows_data <-get_od(
+  region = NULL,
+  n = NULL,
+  type = "within",
+  omit_intrazonal = FALSE,
+  base_url = paste0("https://s3-eu-west-1.amazonaws.com/",
+                    "statistics.digitalresources.jisc.ac.uk", "/dkan/files/FLOW/"),
+  filename = "wu03ew_v2"
+)
+
+```
+
+```{r echo=TRUE, message=TRUE, warning=FALSE}
+head(flows_data)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+#Nodes data MSOA level
+nodes_data <- pct::get_centroids_ew() %>% sf::st_transform(27700)
+```
+
+```{r echo=TRUE, message=TRUE, warning=FALSE}
+head(nodes_data)
+plot(nodes_data["msoa11cd"], main="MSOA Centroids England and wales")
+```
+
+```{r}
+#For Manchester
+
+manchester_polygon <- pct::pct_regions %>% filter(region_name == "greater-manchester")%>%
+  st_transform(.,27700)
+
+ nodes_manchester <- nodes_data[manchester_polygon, ]
+ 
+msoa_manchester <- pct::get_pct_zones("greater-manchester",geography="msoa") %>%
+  select("geo_code")%>% sf::st_transform(27700)
+ 
+
+plot(st_geometry(msoa_manchester),col="white", border="gray", main="MSOA Centroids Manchester")
+plot(st_geometry(nodes_manchester), cex=0.5, col="deepskyblue2", add=TRUE)
+
+```
+
+```{r}
+#For Manchester
+
+flows_data_manchester <- flows_data %>%
+  filter(geo_code1 %in% nodes_manchester$msoa11cd) %>%
+  filter(geo_code2 %in% nodes_manchester$msoa11cd)
+```
+
+### 3 Construct the network
+
+Here we will use **stplanr** package,  but you can also use **igraph** to do it.
+
+
+```{r echo=TRUE, message=TRUE, warning=FALSE}
+#Create the network
+commuting_network <- od2line(flows_data_manchester, nodes_manchester)
+```
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+head(commuting_network)
+```
+
+
+ ![](C:\Users\valentina\Desktop\GIS_seminar\inter.png) 
+
+```{r message=FALSE, warning=FALSE}
+# Inter and Intra movement
+inter_movement <- commuting_network %>% filter(geo_code1 != geo_code2)
+intra_movement <- commuting_network %>% filter(geo_code1 == geo_code2)
+```
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+head(inter_movement)
+```
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+head(intra_movement)
+```
+
+
+### 4 Visualising the network
+
+```{r message=FALSE, warning=FALSE}
+# flows by bicycle
+min_flows <- 1 
+inter_movement_bike  <- inter_movement  %>% filter(bicycle >= min_flows)
+inter_movement_bike <- inter_movement %>% arrange(.,bicycle)
+
+
+
+plot(inter_movement_bike["bicycle"])
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+tmap_mode("view")
+
+tm_shape(inter_movement_bike) +
+  tm_lines(
+    palette = "plasma", breaks = c(0, 5, 10, 20, 40, 60),
+    lwd="bicycle",
+    scale = 9,
+    title.lwd = "Number of trips",
+    alpha = 0.5,
+    col = "bicycle",
+    title = "Bicycle",
+    lwd.legend = c(0.5, 1.5, 2.5, 3),
+    legend.lwd.show = FALSE) 
+```
+
+### 5 MSOA out-comming and in-comming flows
+
+```{r message=FALSE, warning=FALSE}
+out_flow_bymode <- inter_movement %>%
+  sf::st_drop_geometry() %>%
+  group_by(geo_code1) %>%
+  summarize_if(is.numeric, sum) %>%
+  dplyr::rename(geo_code = geo_code1)
+
+msoa_outcomming <- left_join(msoa_manchester, out_flow_bymode , by = "geo_code")
+
+plot(msoa_outcomming[c("all", "car_driver","bus", "train", "foot", "bicycle")], border = NA)
+
+```
+
+
+```{r}
+in_flow_bymode <- inter_movement %>%
+  sf::st_drop_geometry() %>%
+  group_by(geo_code2) %>%
+  summarize_if(is.numeric, sum) %>%
+  dplyr::rename(geo_code = geo_code2)
+
+msoa_incomming <- left_join(msoa_manchester, in_flow_bymode , by = "geo_code")
+
+plot(msoa_incomming[c("all", "car_driver","bus", "train", "foot", "bicycle")], border = NA)
+```
+
+
+### 6 Degree distribution for out-comming and in-comming flows
+
+```{r message=FALSE, warning=FALSE}
+
+min_flows<-20
+
+inter_movement_graph = inter_movement %>% select("geo_code1","geo_code2","all", "car_driver","bus", "train", "foot", "bicycle")%>% filter(all > min_flows)
+
+G=graph.data.frame(inter_movement_graph,directed=T)
+
+
+```
+
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+head(get.edgelist(G))
+```
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+summary(components(G))
+```
+
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+plot(G, vertex.label=NA,vertex.size=.5,edge.arrow.size=0.1)
+
+```
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+seal_coords <- do.call(rbind, st_geometry(nodes_manchester$geometry)) %>% 
+  as_tibble() %>% setNames(c("lon","lat"))
+
+nodes_manchester$x<-seal_coords$lon
+nodes_manchester$y<-seal_coords$lat
+
+coordsPoints=as.data.frame(nodes_manchester[nodes_manchester$msoa11cd %in% V(G)$name,],edge.curved=FALSE)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+matched=match(V(G)$name,coordsPoints[,1])
+V(G)$x=coordsPoints[matched,4]
+V(G)$y=coordsPoints[matched,5]
+
+plot(G, vertex.label=NA,vertex.size=1.5, vertex.color = "deepskyblue2", vertex.frame.color = "black", edge.width=.1, edge.arrow.size=0.1,)
+```
+
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+V(G)$degree<-degree(G)
+```
+
+
+ ![](C:\Users\valentina\Desktop\GIS_seminar\degree.png) 
+
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+head(V(G)$degree)
+```
+
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+max(V(G)$degree)
+min(V(G)$degree)
+```
+
+```{r message=TRUE, warning=FALSE, paged.print=FALSE}
+hist(as.numeric(V(G)$degree), breaks=15,
+     main="Degree Distribution",
+     col="deepskyblue2", 
+     xlim=c(0,400))
+```
+
+
+
+### 7 Distance
+
+```{r message=FALSE, warning=FALSE}
+inter_movement$distance = as.numeric(st_length(inter_movement))
+```
